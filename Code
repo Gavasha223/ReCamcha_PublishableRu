@@ -1,0 +1,254 @@
+import tkinter as tk
+from tkinter import messagebox
+import random
+import requests
+import json
+import os
+import re
+from io import BytesIO
+from PIL import Image, ImageTk
+from mtranslate import translate 
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+PEXELS_API_KEY = "СюдаАпиНада"
+MEMORY_FILE = "ai_memory.json"
+
+class IntelligentAnalysisCaptcha:
+    def __init__(self, root):
+        self.root = root
+        
+        # заголовок и стартовое окно
+        self.root.title("Deep Analysis AI")
+        self.root.geometry("400x600") 
+
+        # переменные
+        self.hints = 0
+        self.current_description = ""
+        self.raw_image = None
+        self.memory = self.load_memory()
+        
+        # сравнение коротких кусочков
+        self.vectorizer = TfidfVectorizer(analyzer='char_wb', ngram_range=(2, 4))
+        
+        # бесполезные кусочки
+        self.stop_words = {"a", "the", "an", "on", "in", "of", "and", "is", "at", "by", "with"}
+
+        # счетчик опыта
+        self.label_hints = tk.Label(root, text=f"Опыт ИИ: {self.hints}", fg="green")
+        self.label_hints.pack(pady=2)
+
+        # окно под картинку (саморастяг)
+        self.img_label = tk.Label(root, text="Загрузка...", bg="#222")
+        self.img_label.pack(padx=5, pady=5, fill=tk.BOTH, expand=True)
+        
+        # саморастяг
+        self.img_label.bind('<Configure>', self.on_resize)
+
+        # нижняя панель
+        self.bottom_frame = tk.Frame(root)
+        self.bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+
+        # инструкция для пользователя
+        self.label_inst = tk.Label(self.bottom_frame, text="Что ты видишь на фото?", font=("Arial", 11, "bold"))
+        self.label_inst.pack()
+
+        # поле ввода
+        self.entry = tk.Entry(self.bottom_frame, font=("Arial", 16), justify="center")
+        self.entry.pack(pady=5, ipady=8, fill=tk.X)
+        self.entry.bind('<Return>', lambda e: self.check_answer())
+
+        # кнопка проверки
+        self.btn_check = tk.Button(self.bottom_frame, text="ПРОВЕРИТЬ", command=self.check_answer, 
+                                   bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
+        self.btn_check.pack(fill=tk.X)
+
+        # кнопка обучения
+        self.btn_teach = tk.Button(self.bottom_frame, text="ИИ НЕ ПРАВ, ЭТО ВЕРНО", 
+                                   command=self.teach_ai, bg="#FF9800")
+
+        # поиск картинки
+        self.next_question()
+
+    def get_synonyms(self, word):
+        #АПИ datamuse
+        try:
+            url = f"https://api.datamuse.com/words?ml={word}&max=5"
+            res = requests.get(url, timeout=1).json()
+            return [item['word'] for item in res]
+        except:
+            return []
+
+    def get_max_word_similarity(self, user_word, description_text):
+        # разбор описания на слова
+        desc_words = [w for w in self.clean_text(description_text).split() if len(w) > 2]
+        user_word = self.clean_text(user_word).strip()
+
+        if not user_word or not desc_words:
+            return 0
+
+        max_score = 0
+        for d_word in desc_words:
+            try:
+                # сравнивание слов из описания
+                tfidf = self.vectorizer.fit_transform([d_word, user_word])
+                score = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
+                if score > max_score:
+                    max_score = score
+            except:
+                continue
+        
+        return max_score
+
+    def find_best_match_word(self, user_word, description):
+        # проверка слова за которое зацепился ИИ
+        words = self.clean_text(description).split()
+        best_w = "объект"
+        max_s = 0
+        for w in words:
+            try:
+                tfidf = self.vectorizer.fit_transform([w, user_word])
+                s = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
+                if s > max_s:
+                    max_s = s
+                    best_w = w
+            except: continue
+        return best_w
+
+    def is_english(self, s):
+        #проверка слов на латинице
+        return bool(re.match(r'^[a-zA-Z\s]+$', s))
+
+    def check_answer(self):
+        user_raw = self.entry.get().strip().lower()
+        if not user_raw: return
+
+        #проверка локальной памятт
+        clean_desc = self.clean_text(self.current_description)
+        if clean_desc in self.memory and user_raw in self.memory[clean_desc]:
+            self.success("ИИ: Я помню это! Вы уже учили меня этому.")
+            return
+
+        # пеееереееевооооооод
+        try:
+            user_en = user_raw if self.is_english(user_raw) else translate(user_raw, 'en').lower()
+        except:
+            user_en = user_raw
+
+        # детальный анализ
+        best_score = self.get_max_word_similarity(user_en, self.current_description)
+        
+        # Логика диалога
+        if best_score > 0.85:
+            self.success(f"ИИ: Абсолютно уверен! Это {user_raw}.")
+        elif best_score > 0.5:
+                  elif best_score > 0.5
+            match_word = self.find_best_match_word(user_en, self.current_description)
+            res = messagebox.askyesno("ИИ сомневается", f"ИИ: Я вижу нечто похожее на {match_word}. Вы имели в виду это?")
+            if res:
+                # 1. СНАЧАЛА обучаем на текущих данных (передаем флаг auto_mode=True)
+                self.teach_ai(auto_mode=True) 
+                # 2. ПОТОМ перелистываем и выводим окно
+                self.success(f"ИИ: Понял! Добавляю {user_raw} в свой словарь.")
+            else:
+                self.fail()
+                # обучение
+                self.teach_ai() 
+            else:
+                self.fail()
+        else:
+            # поиск синонимов
+            syns = self.get_synonyms(user_en)
+            found_syn = False
+            for s in syns:
+                if self.get_max_word_similarity(s, self.current_description) > 0.7:
+                    self.success(f"ИИ: О, я понял аналогию! {user_raw} связано с {s}.")
+                    found_syn = True
+                    break
+            
+            if not found_syn:
+                self.fail()
+
+    def on_resize(self, event):
+        #перерисовка картинки
+        if self.raw_image:
+            self.display_image(event.width, event.height)
+
+    def display_image(self, w, h):
+        #костыль саморастяга
+        if not self.raw_image or w < 10 or h < 10: return
+        img_copy = self.raw_image.copy()
+        img_copy.thumbnail((w, h), Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(img_copy)
+        self.img_label.config(image=self.photo, text="")
+
+    def clean_text(self, text):
+        #очистка от знаков припенания
+        clean = re.sub(r'[^a-zA-Zа-яА-Я\s]', '', text.lower())
+        return " ".join([w for w in clean.split() if w not in self.stop_words])
+
+    def next_question(self):
+        #загрузка новой картинки
+        self.btn_teach.pack_forget()
+        self.label_inst.config(text="Что ты видишь на фото?", fg="black")
+        self.entry.delete(0, tk.END)
+        self.img_label.config(image="", text="Ищу фото...")
+        self.root.update()
+        
+        try:
+            # запрос к Pexels
+            headers = {"Authorization": PEXELS_API_KEY}
+            q = random.choice(["animals", "architecture", "ocean", "objects", "food"])
+            r = requests.get(f"https://api.pexels.com/v1/search?query={q}&per_page=1&page={random.randint(1,100)}", headers=headers)
+            data = r.json()["photos"][0]
+            self.current_description = data.get("alt", q)
+            
+            # установка фотографии в лучшем качествк
+            img_r = requests.get(data["src"]["large"])
+            self.raw_image = Image.open(BytesIO(img_r.content))
+            
+            #костыль№2 саморастяг
+            self.display_image(self.img_label.winfo_width(), self.img_label.winfo_height())
+        except:
+            self.root.after(2000, self.next_question)
+
+    def success(self, msg):
+        #если ответ правильный
+        self.hints += 1
+        self.label_hints.config(text=f"Опыт ИИ: {self.hints}")
+        self.btn_teach.pack_forget()
+        messagebox.showinfo("ИИ понял!", f"{msg}\n\nОригинальное описание: {self.current_description}")
+        self.next_question()
+
+    def fail(self):
+        #ИИ в тупике
+        self.label_inst.config(text="ИИ не видит этого там...", fg="red")
+        self.btn_teach.pack(fill=tk.X, pady=5)
+
+    def teach_ai(self):
+        #запись новых слов
+        desc = self.clean_text(self.current_description)
+        val = self.entry.get().strip().lower()
+        if desc not in self.memory: self.memory[desc] = []
+        if val not in self.memory[desc]:
+            self.memory[desc].append(val)
+            self.save_memory()
+        self.success("Обучение завершено!")
+
+    def load_memory(self):
+        #попытка прочитать JSON файл
+        if os.path.exists(MEMORY_FILE):
+            try:
+                with open(MEMORY_FILE, "r", encoding="utf-8") as f: return json.load(f)
+            except: return {}
+        return {}
+
+    def save_memory(self):
+        #запись в JSON файл
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.memory, f, ensure_ascii=False, indent=4)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = IntelligentAnalysisCaptcha(root)
+    root.mainloop()
